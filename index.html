@@ -1455,16 +1455,18 @@
                 const c = classes[0];
                 const studentsSnap = await db.collection('students').where('classId','==',c.id).get();
                 const date = todayISO();
-                document.getElementById('myClassList').innerHTML = `<div class="card-body"><h3>${esc(c.className)}</h3><p>${studentsSnap.size} students</p><label class="form-label">Date</label><input class="form-input" type="date" id="attendanceDate" value="${date}" onchange="loadFormAttendance('${c.id}')"><div id="formStudentRows">${studentsSnap.docs.map(d=>{const s=d.data(); return `<div class="activity-item" style="padding:10px;border-bottom:1px solid #E2E8F0"><span>${esc(s.firstName)} ${esc(s.lastName)}</span><select class="filter-select" data-student-id="${d.id}"><option value="present">Present</option><option value="absent">Absent</option></select></div>`}).join('')}</div><button class="btn-primary" style="margin-top:16px" onclick="saveFormAttendance('${c.id}')">Save Attendance</button></div>`;
+                document.getElementById('myClassList').innerHTML = `<div class="card-body"><h3>${esc(c.className)}</h3><p>${studentsSnap.size} students</p><label class="form-label">Date</label><input class="form-input" type="date" id="attendanceDate" value="${date}" onchange="loadFormAttendance('${c.id}')"><div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0"><button class="btn-success" style="padding:8px 12px" onclick="setAllAttendance('present')">✓ Select All Present</button><button class="btn-danger" style="padding:8px 12px" onclick="setAllAttendance('absent')">✕ Select All Absent</button></div><div id="formStudentRows">${studentsSnap.docs.map(d=>{const s=d.data(); return `<div class="activity-item" style="padding:10px;border-bottom:1px solid #E2E8F0"><span style="display:inline-block;min-width:220px">${esc(s.firstName)} ${esc(s.lastName)}</span><select class="filter-select attendance-status" data-student-id="${d.id}"><option value="present">Present</option><option value="absent">Absent</option></select></div>`}).join('')}</div><button class="btn-primary" style="margin-top:16px" onclick="saveFormAttendance('${c.id}')">Save Attendance</button></div>`;
             } catch (e) { document.getElementById('myClassList').innerHTML=`<div class="card-body">Error loading class: ${esc(e.message)}</div>`; }
         }
-        window.loadFormAttendance = async function(classId) { /* selections default to Present; saved history remains in Firestore */ };
+        window.setAllAttendance = function(status) { document.querySelectorAll('.attendance-status').forEach(select => select.value = status); };
+        window.loadFormAttendance = async function(classId) { const date=document.getElementById('attendanceDate').value; try{const snap=await db.collection('attendance').where('classId','==',classId).where('date','==',date).get();snap.forEach(d=>{const x=d.data(), el=document.querySelector(`[data-student-id="${x.studentId}"]`);if(el)el.value=x.status||'present';});}catch(e){showToast('Could not load saved attendance: '+e.message,'error')} };
         window.saveFormAttendance = async function(classId) { const date=document.getElementById('attendanceDate').value; const batch=db.batch(); document.querySelectorAll('[data-student-id]').forEach(el=>{const ref=db.collection('attendance').doc(`${classId}_${el.dataset.studentId}_${date}`); batch.set(ref,{classId,studentId:el.dataset.studentId,date,status:el.value,markedBy:currentUser.id,createdAt:new Date().toISOString()},{merge:true});}); try{await batch.commit();showToast('Attendance saved.','success')}catch(e){showToast('Attendance error: '+e.message,'error')} };
 
         async function renderTeacherAcademicRecords(container) {
-            container.innerHTML = `<div class="page-header"><h2>Academic Records</h2><p>Enter scores by class and subject. Totals are calculated automatically.</p></div><div class="card"><div class="card-body"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><input class="form-input" id="scoreClass" placeholder="Class ID (e.g. cls_jss1_delight)"><input class="form-input" id="scoreSubject" placeholder="Subject ID (e.g. sub_math)"></div><select class="form-select" id="scoreType" style="margin-top:12px"><option value="resumption">Resumption Test</option><option value="assignment">Assignment</option><option value="midTerm">Mid-Term Test</option><option value="project">Project</option><option value="examination">Examination</option></select><div id="scoreStudents" style="margin-top:16px">Enter class and subject, then load students.</div><button class="btn-primary" style="margin-top:16px" onclick="loadScoreStudents()">Load Students</button></div></div>`;
+            container.innerHTML = `<div class="page-header"><h2>Academic Records</h2><p>Choose a class and subject, then enter scores. Totals are calculated automatically.</p></div><div class="card"><div class="card-body"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><select class="form-select" id="scoreClass"><option value="">Loading classes...</option></select><select class="form-select" id="scoreSubject"><option value="">Loading subjects...</option></select></div><select class="form-select" id="scoreType" style="margin-top:12px"><option value="resumption">Resumption Test</option><option value="assignment">Assignment</option><option value="midTerm">Mid-Term Test</option><option value="project">Project</option><option value="examination">Examination</option></select><div id="scoreStudents" style="margin-top:16px">Select a class and subject, then load students.</div><button class="btn-primary" style="margin-top:16px" onclick="loadScoreStudents()">Load Students</button></div></div>`;
+            try { const [classes, subjects] = await Promise.all([db.collection('classes').orderBy('className').get(), db.collection('subjects').orderBy('subjectName').get()]); document.getElementById('scoreClass').innerHTML='<option value="">Select class...</option>'+classes.docs.map(d=>`<option value="${esc(d.id)}">${esc(d.data().className || d.id)}</option>`).join(''); document.getElementById('scoreSubject').innerHTML='<option value="">Select subject...</option>'+subjects.docs.map(d=>`<option value="${esc(d.id)}">${esc(d.data().subjectName || d.id)}</option>`).join(''); } catch(e) { showToast('Could not load classes or subjects: '+e.message,'error'); }
         }
-        window.loadScoreStudents = async function() { const classId=document.getElementById('scoreClass').value.trim(); if(!classId){showToast('Enter a class ID.','error');return;} try{const snap=await db.collection('students').where('classId','==',classId).get();const rows=await Promise.all(snap.docs.map(async d=>{const s=d.data(), r=await db.collection('academicRecords').doc(`${d.id}_${classId}_${document.getElementById('scoreSubject').value.trim()}`).get(), x=r.exists?r.data():{}, assignments=Array.isArray(x.assignments)?x.assignments:[], total=Number(x.resumption||0)+assignments.reduce((a,v)=>a+Number(v.score||0),0)+Number(x.midTerm||0)+Number(x.project||0)+Number(x.examination||0);return `<div style="display:flex;gap:12px;align-items:center;margin:8px 0"><span style="flex:1">${esc(s.firstName)} ${esc(s.lastName)} <small>Total: ${total}</small></span><input class="form-input score-value" data-student-id="${d.id}" type="number" min="0" placeholder="${document.getElementById('scoreType').value==='assignment'?'Assignment score':'Score'}"></div>`;}));document.getElementById('scoreStudents').innerHTML=rows.join('')+`<button class="btn-success" style="margin-top:12px" onclick="saveScores()">Save Scores</button>`;}catch(e){showToast('Could not load students: '+e.message,'error')} };
+        window.loadScoreStudents = async function() { const classId=document.getElementById('scoreClass').value; const subjectId=document.getElementById('scoreSubject').value; if(!classId||!subjectId){showToast('Select both a class and subject.','error');return;} try{const snap=await db.collection('students').where('classId','==',classId).get();const rows=await Promise.all(snap.docs.map(async d=>{const s=d.data(), r=await db.collection('academicRecords').doc(`${d.id}_${classId}_${subjectId}`).get(), x=r.exists?r.data():{}, assignments=Array.isArray(x.assignments)?x.assignments:[], total=Number(x.resumption||0)+assignments.reduce((a,v)=>a+Number(v.score||0),0)+Number(x.midTerm||0)+Number(x.project||0)+Number(x.examination||0);return `<div style="display:flex;gap:12px;align-items:center;margin:8px 0"><span style="flex:1">${esc(s.firstName)} ${esc(s.lastName)} <small>Total: ${total}</small></span><input class="form-input score-value" data-student-id="${d.id}" type="number" min="0" placeholder="${document.getElementById('scoreType').value==='assignment'?'Assignment score':'Score'}"></div>`;}));document.getElementById('scoreStudents').innerHTML=rows.join('')+`<button class="btn-success" style="margin-top:12px" onclick="saveScores()">Save Scores</button>`;}catch(e){showToast('Could not load students: '+e.message,'error')} };
         window.saveScores = async function() { const classId=document.getElementById('scoreClass').value.trim(), subjectId=document.getElementById('scoreSubject').value.trim(), type=document.getElementById('scoreType').value; const batch=db.batch(); document.querySelectorAll('.score-value').forEach(el=>{const ref=db.collection('academicRecords').doc(`${el.dataset.studentId}_${classId}_${subjectId}`); const value=Number(el.value||0); if(type==='assignment') batch.set(ref,{studentId:el.dataset.studentId,classId,subjectId,updatedBy:currentUser.id,updatedAt:new Date().toISOString(),assignments:firebase.firestore.FieldValue.arrayUnion({score:value,createdAt:new Date().toISOString(),createdBy:currentUser.id})},{merge:true}); else batch.set(ref,{studentId:el.dataset.studentId,classId,subjectId,updatedBy:currentUser.id,updatedAt:new Date().toISOString(),[type]:value},{merge:true});}); try{await batch.commit();showToast(type==='assignment'?'Assignment added.':'Scores saved. Reload the class to see updated totals.','success')}catch(e){showToast('Score error: '+e.message,'error')} };
 
         async function renderTimetable(container) {
@@ -2514,7 +2516,7 @@
                 </div>
 
                 <div class="actions-bar">
-                    <button class="btn-primary" onclick="openAddAnnouncement()">+ New Announcement</button>
+                    ${currentUser?.role === 'admin' ? '<button class="btn-primary" onclick="openAddAnnouncement()">+ New Announcement</button>' : '<span class="hint-text">Announcements from the administrator appear here for 7 days.</span>'}
                 </div>
 
                 <div id="announcementsList">
@@ -2537,15 +2539,22 @@
                             <div class="card-body" style="text-align:center;padding:40px;">
                                 <p style="font-size:48px;margin-bottom:16px;">📢</p>
                                 <h3>No announcements yet</h3>
-                                <p style="color:#64748B;">Create your first announcement to communicate with the school community.</p>
-                                <button class="btn-primary" style="margin-top:16px;" onclick="openAddAnnouncement()">+ New Announcement</button>
+                                <p style="color:#64748B;">${currentUser?.role === 'admin' ? 'Create your first announcement to communicate with the school community.' : 'Published announcements from the administrator will appear here.'}</p>
+                                ${currentUser?.role === 'admin' ? '<button class="btn-primary" style="margin-top:16px;" onclick="openAddAnnouncement()">+ New Announcement</button>' : ''}
                             </div>
                         </div>
                     `;
                     return;
                 }
 
-                container.innerHTML = snap.docs.map(doc => {
+                const now = Date.now();
+                const visibleDocs = snap.docs.filter(doc => {
+                    const d = doc.data();
+                    const expiry = d.expiresAt || (d.createdAt ? new Date(new Date(d.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString() : null);
+                    return currentUser?.role === 'admin' || (d.status === 'published' && expiry && new Date(expiry).getTime() > now);
+                });
+                if (!visibleDocs.length) { container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;"><p style="font-size:48px">📢</p><h3>No active announcements</h3><p style="color:#64748B">Published announcements are available to teachers for 7 days.</p></div></div>'; return; }
+                container.innerHTML = visibleDocs.map(doc => {
                     const d = doc.data();
                     const priorityColors = {
                         normal: 'badge-info',
@@ -2580,9 +2589,7 @@
                                         <span>👤 ${d.createdBy || 'Admin'}</span>
                                     </div>
                                     <div style="display:flex;gap:8px;">
-                                        <button class="btn-primary" style="padding:6px 12px;font-size:12px;" onclick="editAnnouncement('${doc.id}')">✏️ Edit</button>
-                                        <button class="btn-danger" style="padding:6px 12px;font-size:12px;" onclick="deleteAnnouncement('${doc.id}')">🗑️</button>
-                                        ${d.status === 'draft' ? `<button class="btn-success" style="padding:6px 12px;font-size:12px;" onclick="publishAnnouncement('${doc.id}')">📤 Publish</button>` : ''}
+                                        ${currentUser?.role === 'admin' ? `<button class="btn-primary" style="padding:6px 12px;font-size:12px;" onclick="editAnnouncement('${doc.id}')">✏️ Edit</button><button class="btn-danger" style="padding:6px 12px;font-size:12px;" onclick="deleteAnnouncement('${doc.id}')">🗑️</button>${d.status === 'draft' ? `<button class="btn-success" style="padding:6px 12px;font-size:12px;" onclick="publishAnnouncement('${doc.id}')">📤 Publish</button>` : ''}` : ''}
                                     </div>
                                 </div>
                             </div>
@@ -2596,6 +2603,7 @@
         }
 
         window.openAddAnnouncement = function() {
+            if (currentUser?.role !== 'admin') { showToast('Only the administrator can create announcements.', 'error'); return; }
             const modal = document.createElement('div');
             modal.className = 'modal-overlay active';
             modal.id = 'addAnnouncementModal';
@@ -2644,6 +2652,7 @@
         };
 
         async function saveAnnouncement() {
+            if (currentUser?.role !== 'admin') { showToast('Only the administrator can create announcements.', 'error'); return; }
             const title = document.getElementById('announcementTitle').value.trim();
             const content = document.getElementById('announcementContent').value.trim();
             const priority = document.getElementById('announcementPriority').value;
@@ -2659,13 +2668,16 @@
             btn.textContent = 'Saving...';
 
             try {
+                const createdAt = new Date();
+                const expiresAt = new Date(createdAt.getTime() + 7 * 24 * 60 * 60 * 1000);
                 await db.collection('announcements').add({
                     title,
                     content,
                     priority,
                     status,
                     createdBy: currentUser?.name || 'Admin',
-                    createdAt: new Date().toISOString(),
+                    createdAt: createdAt.toISOString(),
+                    expiresAt: expiresAt.toISOString(),
                     updatedAt: new Date().toISOString()
                 });
 
@@ -2680,6 +2692,7 @@
         }
 
         window.deleteAnnouncement = async function(id) {
+            if (currentUser?.role !== 'admin') { showToast('Only the administrator can manage announcements.', 'error'); return; }
             if (!confirm('Are you sure you want to delete this announcement?')) return;
             try {
                 await db.collection('announcements').doc(id).delete();
@@ -2691,6 +2704,7 @@
         };
 
         window.publishAnnouncement = async function(id) {
+            if (currentUser?.role !== 'admin') { showToast('Only the administrator can manage announcements.', 'error'); return; }
             try {
                 await db.collection('announcements').doc(id).update({
                     status: 'published',
