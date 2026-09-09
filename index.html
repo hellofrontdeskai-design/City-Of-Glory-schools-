@@ -1366,6 +1366,9 @@
                 attendance: 'Attendance',
                 'academic-records': 'Academic Records',
                 announcements: 'Announcements',
+                'my-day': 'My Day',
+                'my-class': 'My Class',
+                timetable: 'Timetable',
                 settings: 'Settings'
             };
             document.getElementById('pageTitle').textContent = titles[page] || 'Dashboard';
@@ -1376,6 +1379,12 @@
             switch(page) {
                 case 'dashboard':
                     renderDashboard(container);
+                    break;
+                case 'my-day':
+                    renderMyDay(container);
+                    break;
+                case 'my-class':
+                    renderMyClass(container);
                     break;
                 case 'students':
                     renderStudents(container);
@@ -1396,7 +1405,10 @@
                     renderAttendance(container);
                     break;
                 case 'academic-records':
-                    renderAcademicRecords(container);
+                    currentUser?.role === 'admin' ? renderAcademicRecords(container) : renderTeacherAcademicRecords(container);
+                    break;
+                case 'timetable':
+                    renderTimetable(container);
                     break;
                 case 'announcements':
                     renderAnnouncements(container);
@@ -1408,6 +1420,59 @@
                     container.innerHTML = '<h2>Page not found</h2>';
             }
         }
+
+        // ============================================
+        // ROLE-SPECIFIC SCHOOL WORKFLOWS
+        // ============================================
+        const todayISO = () => new Date().toISOString().slice(0, 10);
+        const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+        async function renderMyDay(container) {
+            if (currentUser?.role === 'admin') { container.innerHTML = '<div class="card"><div class="card-body">My Day is available to teachers.</div></div>'; return; }
+            container.innerHTML = `<div class="page-header"><h2>My Day</h2><p>Today's timetable and classes.</p></div><div id="myDayList" class="card"><div class="card-body">Loading today's classes...</div></div>`;
+            try {
+                const snap = await db.collection('timetable').orderBy('time').get();
+                const rows = snap.docs.map(d => ({id:d.id, ...d.data()})).filter(x => {
+                    const teacher = [x.teacherId, x.teacherLoginId, x.loginId].map(v => String(v || '').toUpperCase());
+                    return teacher.includes(String(currentUser.id).toUpperCase()) || teacher.includes(String(currentUser.loginId).toUpperCase());
+                });
+                document.getElementById('myDayList').innerHTML = `<div class="card-body">${rows.length ? rows.map(x => `<div class="activity-item" style="padding:18px;border-bottom:1px solid #E2E8F0"><strong>${esc(x.time || 'Time not set')}</strong> — ${esc(x.className || x.classId || 'Class')} — ${esc(x.subjectName || x.subjectId || 'Subject')} <span style="float:right">${esc(x.teacherName || currentUser.name)} <button class="btn-success" style="padding:7px 12px" onclick="markClassAttended('${x.id}')">Class Attended ✓</button></span></div>`).join('') : '<p>No timetable classes are assigned to you today.</p>'}</div>`;
+            } catch (e) { document.getElementById('myDayList').innerHTML = `<div class="card-body">Error loading timetable: ${esc(e.message)}</div>`; }
+        }
+
+        window.markClassAttended = async function(timetableId) {
+            try { await db.collection('classAttendance').add({timetableId, teacherId:currentUser.id, teacherLoginId:currentUser.loginId, date:todayISO(), status:'attended', createdAt:new Date().toISOString()}); showToast('Class marked as attended.', 'success'); }
+            catch (e) { showToast('Could not mark class: ' + e.message, 'error'); }
+        };
+
+        async function renderMyClass(container) {
+            if (currentUser?.role === 'admin') { renderClasses(container); return; }
+            container.innerHTML = `<div class="page-header"><h2>My Class</h2><p>Form Teacher attendance and students.</p></div><div id="myClassList" class="card"><div class="card-body">Loading your form class...</div></div>`;
+            try {
+                const snap = await db.collection('classes').get();
+                const classes = snap.docs.map(d => ({id:d.id, ...d.data()})).filter(x => [x.formTeacherId,x.formTeacherLoginId].map(v=>String(v||'').toUpperCase()).includes(String(currentUser.id).toUpperCase()) || [x.formTeacherId,x.formTeacherLoginId].map(v=>String(v||'').toUpperCase()).includes(String(currentUser.loginId).toUpperCase()));
+                if (!classes.length) { document.getElementById('myClassList').innerHTML='<div class="card-body">You are not assigned as a Form Teacher.</div>'; return; }
+                const c = classes[0];
+                const studentsSnap = await db.collection('students').where('classId','==',c.id).get();
+                const date = todayISO();
+                document.getElementById('myClassList').innerHTML = `<div class="card-body"><h3>${esc(c.className)}</h3><p>${studentsSnap.size} students</p><label class="form-label">Date</label><input class="form-input" type="date" id="attendanceDate" value="${date}" onchange="loadFormAttendance('${c.id}')"><div id="formStudentRows">${studentsSnap.docs.map(d=>{const s=d.data(); return `<div class="activity-item" style="padding:10px;border-bottom:1px solid #E2E8F0"><span>${esc(s.firstName)} ${esc(s.lastName)}</span><select class="filter-select" data-student-id="${d.id}"><option value="present">Present</option><option value="absent">Absent</option></select></div>`}).join('')}</div><button class="btn-primary" style="margin-top:16px" onclick="saveFormAttendance('${c.id}')">Save Attendance</button></div>`;
+            } catch (e) { document.getElementById('myClassList').innerHTML=`<div class="card-body">Error loading class: ${esc(e.message)}</div>`; }
+        }
+        window.loadFormAttendance = async function(classId) { /* selections default to Present; saved history remains in Firestore */ };
+        window.saveFormAttendance = async function(classId) { const date=document.getElementById('attendanceDate').value; const batch=db.batch(); document.querySelectorAll('[data-student-id]').forEach(el=>{const ref=db.collection('attendance').doc(`${classId}_${el.dataset.studentId}_${date}`); batch.set(ref,{classId,studentId:el.dataset.studentId,date,status:el.value,markedBy:currentUser.id,createdAt:new Date().toISOString()},{merge:true});}); try{await batch.commit();showToast('Attendance saved.','success')}catch(e){showToast('Attendance error: '+e.message,'error')} };
+
+        async function renderTeacherAcademicRecords(container) {
+            container.innerHTML = `<div class="page-header"><h2>Academic Records</h2><p>Enter scores by class and subject. Totals are calculated automatically.</p></div><div class="card"><div class="card-body"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><input class="form-input" id="scoreClass" placeholder="Class ID (e.g. cls_jss1_delight)"><input class="form-input" id="scoreSubject" placeholder="Subject ID (e.g. sub_math)"></div><select class="form-select" id="scoreType" style="margin-top:12px"><option value="resumption">Resumption Test</option><option value="assignment">Assignment</option><option value="midTerm">Mid-Term Test</option><option value="project">Project</option><option value="examination">Examination</option></select><div id="scoreStudents" style="margin-top:16px">Enter class and subject, then load students.</div><button class="btn-primary" style="margin-top:16px" onclick="loadScoreStudents()">Load Students</button></div></div>`;
+        }
+        window.loadScoreStudents = async function() { const classId=document.getElementById('scoreClass').value.trim(); if(!classId){showToast('Enter a class ID.','error');return;} try{const snap=await db.collection('students').where('classId','==',classId).get();const rows=await Promise.all(snap.docs.map(async d=>{const s=d.data(), r=await db.collection('academicRecords').doc(`${d.id}_${classId}_${document.getElementById('scoreSubject').value.trim()}`).get(), x=r.exists?r.data():{}, assignments=Array.isArray(x.assignments)?x.assignments:[], total=Number(x.resumption||0)+assignments.reduce((a,v)=>a+Number(v.score||0),0)+Number(x.midTerm||0)+Number(x.project||0)+Number(x.examination||0);return `<div style="display:flex;gap:12px;align-items:center;margin:8px 0"><span style="flex:1">${esc(s.firstName)} ${esc(s.lastName)} <small>Total: ${total}</small></span><input class="form-input score-value" data-student-id="${d.id}" type="number" min="0" placeholder="${document.getElementById('scoreType').value==='assignment'?'Assignment score':'Score'}"></div>`;}));document.getElementById('scoreStudents').innerHTML=rows.join('')+`<button class="btn-success" style="margin-top:12px" onclick="saveScores()">Save Scores</button>`;}catch(e){showToast('Could not load students: '+e.message,'error')} };
+        window.saveScores = async function() { const classId=document.getElementById('scoreClass').value.trim(), subjectId=document.getElementById('scoreSubject').value.trim(), type=document.getElementById('scoreType').value; const batch=db.batch(); document.querySelectorAll('.score-value').forEach(el=>{const ref=db.collection('academicRecords').doc(`${el.dataset.studentId}_${classId}_${subjectId}`); const value=Number(el.value||0); if(type==='assignment') batch.set(ref,{studentId:el.dataset.studentId,classId,subjectId,updatedBy:currentUser.id,updatedAt:new Date().toISOString(),assignments:firebase.firestore.FieldValue.arrayUnion({score:value,createdAt:new Date().toISOString(),createdBy:currentUser.id})},{merge:true}); else batch.set(ref,{studentId:el.dataset.studentId,classId,subjectId,updatedBy:currentUser.id,updatedAt:new Date().toISOString(),[type]:value},{merge:true});}); try{await batch.commit();showToast(type==='assignment'?'Assignment added.':'Scores saved. Reload the class to see updated totals.','success')}catch(e){showToast('Score error: '+e.message,'error')} };
+
+        async function renderTimetable(container) {
+            if (currentUser?.role !== 'admin') { container.innerHTML='<div class="card"><div class="card-body">Only administrators can manage the timetable.</div></div>'; return; }
+            container.innerHTML=`<div class="page-header"><h2>Timetable</h2><p>Entries here appear automatically in teachers' My Day.</p></div><div class="card"><div class="card-body"><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px"><input class="form-input" id="ttTime" placeholder="8:00"><input class="form-input" id="ttClass" placeholder="Class name"><input class="form-input" id="ttSubject" placeholder="Subject"><input class="form-input" id="ttTeacher" placeholder="Teacher ID/login ID"><button class="btn-primary" onclick="saveTimetableEntry()">Add</button></div></div></div><div id="timetableRows" class="card" style="margin-top:16px"><div class="card-body">Loading timetable...</div></div>`;
+            try{const snap=await db.collection('timetable').orderBy('time').get();document.getElementById('timetableRows').innerHTML='<div class="card-body">'+(snap.docs.map(d=>{const x=d.data();return `<div class="activity-item" style="padding:12px;border-bottom:1px solid #E2E8F0"><strong>${esc(x.time)}</strong> — ${esc(x.className)} — ${esc(x.subjectName)} — Teacher: ${esc(x.teacherName||x.teacherId||x.teacherLoginId)}</div>`}).join('')||'No timetable entries.')+'</div>';}catch(e){document.getElementById('timetableRows').innerHTML=`<div class="card-body">Error: ${esc(e.message)}</div>`;}
+        }
+        window.saveTimetableEntry = async function(){const data={time:document.getElementById('ttTime').value.trim(),className:document.getElementById('ttClass').value.trim(),subjectName:document.getElementById('ttSubject').value.trim(),teacherId:document.getElementById('ttTeacher').value.trim(),createdBy:currentUser.id,createdAt:new Date().toISOString()};if(!data.time||!data.className||!data.subjectName||!data.teacherId){showToast('Complete all timetable fields.','error');return;}try{await db.collection('timetable').add(data);showToast('Timetable entry added.','success');renderTimetable(document.getElementById('pageContent'));}catch(e){showToast('Timetable error: '+e.message,'error')}};
 
         // ============================================
         // RENDER DASHBOARD
@@ -2913,6 +2978,7 @@
                 { icon: '👨‍🏫', label: 'Teachers', page: 'teachers' },
                 { icon: '🏫', label: 'Classes', page: 'classes' },
                 { icon: '📚', label: 'Subjects', page: 'subjects' },
+                { icon: '🗓️', label: 'Timetable', page: 'timetable' },
                 { icon: '⚙️', label: 'Academic Setup', page: 'academic-setup' },
                 { icon: '📋', label: 'Attendance', page: 'attendance' },
                 { icon: '📊', label: 'Academic Records', page: 'academic-records' },
@@ -2920,8 +2986,8 @@
                 { icon: '👤', label: 'Settings', page: 'settings' }
             ] : [
                 { icon: '📊', label: 'Dashboard', page: 'dashboard' },
-                { icon: '📚', label: 'My Classes', page: 'classes' },
-                { icon: '📖', label: 'My Subjects', page: 'subjects' },
+                { icon: '🗓️', label: 'My Day', page: 'my-day' },
+                { icon: '🏫', label: 'My Class', page: 'my-class' },
                 { icon: '📋', label: 'Attendance', page: 'attendance' },
                 { icon: '📊', label: 'Academic Records', page: 'academic-records' },
                 { icon: '📢', label: 'Announcements', page: 'announcements' }
@@ -2978,3 +3044,4 @@
     </script>
 </body>
     </html>
+    
